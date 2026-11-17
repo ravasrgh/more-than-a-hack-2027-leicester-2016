@@ -1,0 +1,323 @@
+% Technical document -- More than a Hack 2027, Phase 1 (Ball Possession), team Leicester 2016.
+% Build:  python doc/make_figures.py <validation npz>   then   cd doc && latexmk -pdf Leicester_2016.tex
+\documentclass[10pt,twocolumn,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage{times}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{color}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage[hidelinks]{hyperref}
+
+% page: A4, ~18 mm margins (geometry is not installed here)
+\pdfpagewidth=210mm \pdfpageheight=297mm
+\setlength{\textwidth}{176mm}\setlength{\oddsidemargin}{-1in}\addtolength{\oddsidemargin}{17mm}
+\setlength{\evensidemargin}{\oddsidemargin}
+\setlength{\textheight}{256mm}\setlength{\topmargin}{-1in}\addtolength{\topmargin}{18mm}
+\setlength{\headheight}{0pt}\setlength{\headsep}{0pt}\setlength{\footskip}{8mm}
+\setlength{\columnsep}{6mm}
+\setlength{\parskip}{0pt}
+
+% compact headings and lists
+\titleformat{\section}{\normalfont\bfseries\large}{\thesection.}{0.5em}{}
+\titlespacing*{\section}{0pt}{8pt plus 2pt}{3pt}
+\titleformat{\paragraph}[runin]{\normalfont\bfseries}{}{0pt}{}
+\titlespacing*{\paragraph}{0pt}{3pt}{0.6em}
+\setlist{nosep,leftmargin=1.1em}
+\setlength{\abovecaptionskip}{3pt}\setlength{\belowcaptionskip}{0pt}
+\setlength{\textfloatsep}{8pt plus 2pt}\setlength{\floatsep}{6pt plus 2pt}
+\setlength{\dbltextfloatsep}{8pt plus 2pt}
+
+% booktabs-style rules (booktabs is not installed here)
+\newcommand{\toprule}{\noalign{\global\arrayrulewidth=0.8pt}\hline\noalign{\global\arrayrulewidth=0.4pt\vskip1.5pt}}
+\newcommand{\midrule}{\noalign{\vskip1pt}\hline\noalign{\vskip1.5pt}}
+\newcommand{\bottomrule}{\noalign{\vskip1pt\global\arrayrulewidth=0.8pt}\hline\noalign{\global\arrayrulewidth=0.4pt}}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\renewcommand{\arraystretch}{1.12}
+
+\newcommand{\spf}{spellF1}
+\newcommand{\mf}{macroF1}
+
+\title{\vspace{-8mm}\Large\bfseries Ball Possession from Automatic Tracking:\\
+Degraded-Data Training and Possession-Level Decoding}
+\author{Team \textbf{Leicester 2016}\\[1pt]
+\normalsize More than a Hack 2027 -- Phase 1 (Ball Possession)\\[1pt]
+\small Submission \texttt{Leicester\_2016.csv}\quad$\cdot$\quad code: \texttt{possession/} in the team repository}
+\date{\vspace{-6mm}}
+
+\makeatletter
+\newcommand{\figcaption}[1]{\def\@captype{figure}\caption{#1}}
+\makeatother
+
+\begin{document}
+\twocolumn[{%
+\maketitle
+\vspace{-4mm}
+\begin{center}
+  \includegraphics[width=\textwidth]{figures/pipeline.pdf}
+  \figcaption{Pipeline. Training data are other games, degraded to ATD quality. At test time the
+  BAR--ATH ATD and Smart Tagging enter at the feature step; five models are averaged and the
+  Viterbi decoder turns frame probabilities into whole possessions.}
+  \label{fig:pipeline}
+\end{center}
+\vspace{2mm}
+}]
+
+\begin{abstract}
+\noindent We label every frame of BAR--ATH as \textbf{H}/\textbf{A}/\textbf{D} (\textbf{X} outside
+the halves) with gradient-boosted classifiers trained \emph{only on other games}, and decode whole
+possessions with a three-state Viterbi. The key step is making clean, labelled tracking from other
+games \emph{look like} the competition's automatic tracking (ATD): the ball is hidden mostly while
+play is dead and is low-pass filtered, exactly as measured on the unlabelled ATD. Team-shape and
+ball-touch features, a 5-model ensemble and possession-level decoding give
+\textbf{\spf{} 0.682 / \mf{} 0.932} in leave-one-game-out validation on the Metrica sample games
+(mean of three seeds). No human label of BAR--ATH, and none of its public ground truth, is used to
+train, select or tune anything.
+\end{abstract}
+
+
+\section{Approach and why}
+
+\begin{itemize}
+\item \textbf{The ball is missing on 41\,\% of graded ATD frames}, in $\sim$150 long gaps (median
+  10.7\,s). ``Nearest player to the ball'' says nothing there; the owner has to be inferred from
+  team shape (who pushes up, who is compact, how fast everyone moves). That is pattern recognition,
+  so we learn it from labelled games.
+\item \textbf{No label of BAR--ATH may be used}, so labels must come from other games, whose tracking
+  is far cleaner than the ATD. Making it look like the ATD (Sec.~\ref{sec:degrade}) mattered more
+  than any feature or model change.
+\item \textbf{\spf{} rewards whole possessions, not frames.} Per-frame argmax flickers many times a
+  minute (Fig.~\ref{fig:timeline}). A decoder with transition penalties is the simplest way to trade
+  a little frame accuracy for clean possession boundaries.
+\item \textbf{Features are team-level} (centroids, spreads, speeds, nearest-player distances, counts
+  near the ball), so the ATD's 46 anonymous, fragmenting track slots do not matter.
+\item \textbf{Ball-touch features} catch short possessions that team shape reacts to too slowly. A
+  touch is a peak of the ball's velocity change ($>4$\,m/s over 0.24\,s) with a player within
+  2.5\,m. From touches we derive the team of the previous/next touch, time since/until it, touch
+  balance and counts per team in $\pm$1\,s and $\pm$3\,s, and which team is nearer the ball.
+\end{itemize}
+
+\section{Training data}
+
+No data about BAR--ATH produced by a human is used anywhere. Labels of the training games are
+derived \emph{mechanically} from each game's own data (Table~\ref{tab:data}).
+
+\begin{table}[t]
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}>{\raggedright\arraybackslash}p{27mm}c@{\ \ }cL@{}}
+\toprule
+dataset & games & hours & labels \\
+\midrule
+Metrica Sports public sample data (commit \texttt{e706dd5}) & 3 & 4.7 &
+  Metrica's human event annotators; possession and dead ball derived by our rules below \\
+IDSSE (Bassek et al., \emph{Sci.\ Data} 12, 2025; CC-BY 4.0; figshare 28196177) &
+  7 & 11.1 & DFL / Sportec official feed: \texttt{BallStatus} and \texttt{BallPossession} on every frame \\
+\bottomrule
+\end{tabularx}
+\caption{Labelled training data. All of it is about other games.}
+\label{tab:data}
+\end{table}
+
+\paragraph{Labels from Metrica events.} The owner of the alive ball is the team of the most recent
+on-ball event (pass, carry, shot, set piece, recovery, ball lost, ball out). The ball is dead from
+the end of the event before a set piece until it is taken; for a foul from the offence. Outside
+kick-off\,$\to$\,last event of each half the label is X.
+
+\paragraph{Two definitions.} IDSSE marks more dead time (41--52\,\% vs 25--33\,\% of frames) and
+more, shorter possessions. It still helps on the Metrica games (+0.010 \spf{}, all seeds), so it is
+used for both models. Validation test games are always Metrica, the organisers' definition.
+
+\section{Making training data look like the ATD}
+\label{sec:degrade}
+
+Every degradation parameter was set from \emph{unlabelled} ATD statistics only
+(Table~\ref{tab:degrade}, Fig.~\ref{fig:smoothing}). The clean ball is first interpolated through
+its own gaps: in the sample data it is missing almost exactly when dead, which would leak the label.
+Two degraded copies are made of each training game. Gradient boosting handles the NaNs natively, and
+features carry context across a gap (time since/until the ball was seen, ball position and
+nearest-player gap carried forward and backward).
+
+\begin{table}[t]
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}LL@{}}
+\toprule
+ATD property (measured without labels) & reproduced by \\
+\midrule
+ball missing 41\,\%, long runs (median 10.7\,s) & real ATD visible/missing run lengths resampled \\
+ball lost mainly in dead play: players move 1.14\,m/s while it is missing vs 2.09\,m/s while
+  visible; a 2-component mixture gives $P(\mbox{miss}\mid\mbox{dead})\approx0.95$--$1$,
+  $P(\mbox{miss}\mid\mbox{alive})\approx0.06$ &
+  state-dependent mask: dead spells hidden ($\pm$1\,s jitter at the edges), alive play loses the
+  ball 6\,\% of the time \\
+smooth positions (median 2nd difference 0.011\,m ball, 0.001\,m players) &
+  Gaussian noise smoothed over $\sim$1\,s, not white jitter \\
+low-pass filtered ball (Fig.~\ref{fig:smoothing}) & Gaussian smoothing, $\sigma=6$ frames \\
+track slots drop out & 10\,s dropouts on 7\,\% of player-frames \\
+\bottomrule
+\end{tabularx}
+\caption{Degradation of the training tracking.}
+\label{tab:degrade}
+\end{table}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/smoothing.pdf}
+  \caption{Ball velocity change over $\pm$1/3/6 frames. The clean training ball is far sharper than
+  the ATD ball; Gaussian smoothing with $\sigma=6$ frames matches both percentiles at all lags. This
+  matters for the touch features, which would otherwise fire far more often in training than at
+  test time.}
+  \label{fig:smoothing}
+\end{figure}
+
+\paragraph{Smart Tagging.} Set-piece tags give restart anchors and phase tags give a noisy ``team
+believed in possession''. The training games have no Smart Tagging, so an equivalent noisy context
+is synthesised from their events: 60\,\% of set pieces kept with $\pm$0.5\,s jitter, 80\,\% of
+possessions tagged, 8\,\% with the wrong team. The model thus \emph{learns} how far to trust a tag.
+
+\section{Model and decoding}
+
+Two gradient-boosted tree models (scikit-learn \texttt{HistGradientBoosting}, 300 rounds, 31
+leaves): a \emph{dead} model $P(D\mid\mbox{frame})$ and an \emph{owner} model
+$P(\mbox{team }T\mbox{ has the ball}\mid\mbox{alive})$. The owner model is applied from both teams'
+points of view and the two answers are combined, so it is symmetric by construction. Five such pairs
+are trained on copies degraded with different seeds and their probabilities averaged.
+
+A three-state Viterbi then maximises $\sum_t \log P(s_t\mid\mbox{frame}_t)$ minus transition costs:
+20 nats for H$\leftrightarrow$A and 16 for entering or leaving D, separately in each half.
+Fig.~\ref{fig:timeline} shows what this buys: the frame-level argmax is mostly right but splits
+possessions into many fragments, each of which would be an unmatched spell.
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/timeline.pdf}
+  \caption{Three minutes of a held-out Metrica game (model trained without it). Top: ground truth,
+  per-frame argmax and the decoded output. Bottom: model probabilities. The decoder removes the
+  flicker that \spf{} punishes; the price is that very short possessions can be absorbed.}
+  \label{fig:timeline}
+\end{figure*}
+
+\section{Validation and model selection}
+
+Leave-one-game-out: train on two Metrica games (+ all IDSSE), test on the held-out Metrica game
+degraded the same way, score with the official \texttt{possession\_metrics}. \textbf{All choices
+were made here.} The public 5-minute window of BAR--ATH was only used to check that the pipeline
+runs end to end, never to select or tune.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/ablation.pdf}
+  \caption{Leave-one-game-out \spf{} as components are added. \mf{} of the final model: 0.932
+  (0.929 / 0.933 / 0.935), higher than without the ensemble on every seed.}
+  \label{fig:ablation}
+\end{figure}
+
+Fig.~\ref{fig:ablation} summarises the steps. Rows that change the degradation (smoothing) also
+change the degraded test games, so they are not strictly comparable with the rows above; they were
+chosen because they match ATD statistics, not for their score. A random, state-independent ball mask
+gives 0.579. Rows that change only data or features share the test set: IDSSE +0.010 and touch
+features +0.016, positive on every seed; the ensemble +0.005 (+0.005 / +0.012 / $-$0.002), adopted
+because it lowers variance and raises \mf{} on every seed. The decoder penalties are the centre of a
+flat optimum of a $6\times5$ grid (all cells within 0.007).
+
+\paragraph{Label-free check on BAR--ATH.} The only check of the output we allowed ourselves compares
+it with what the unlabelled ATD implies (Table~\ref{tab:consist}). The final output has H 59{,}906,
+A 39{,}033, D 59{,}918, X 40{,}462 frames and 276 possessions.
+
+\begin{table}[t]
+\centering\footnotesize
+\begin{tabular}{@{}lccc@{}}
+\toprule
+ & final output & first version & expected from ATD \\
+\midrule
+dead share & 0.377 & 0.435 & $\approx$0.37 \\
+$P(D\mid\mbox{ball missing})$ & 0.90 & 0.71 & $\approx$0.91 \\
+$P(D\mid\mbox{ball visible})$ & 0.02 & 0.24 & $\approx$0--0.03 \\
+\bottomrule
+\end{tabular}
+\caption{Consistency of the output with the ATD mixture estimate (no labels involved).}
+\label{tab:consist}
+\end{table}
+
+\section{Possession rules implemented}
+
+\begin{itemize}
+\item \textbf{Loose balls, deflections, aerial duels:} stay with the team last in control until the
+  other team makes a controlled on-ball action. The switch penalty stops a single touch by the
+  defending team from creating a possession.
+\item \textbf{Challenges / tackles:} possession changes only when the winning team keeps the ball. A
+  foul makes the ball dead from the offence until the free kick is taken.
+\item \textbf{Restarts:} dead from the stoppage until the set piece is played; the restart belongs
+  to the team taking it (kick-off, free kick, corner, goal kick, throw-in).
+\item \textbf{Outside the halves:} X, from the published half boundaries.
+\end{itemize}
+
+\section{What we tried and dropped}
+
+\begin{table}[t]
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}L>{\raggedright\arraybackslash}p{30mm}@{}}
+\toprule
+idea & result (LOGO \spf{}) \\
+\midrule
+PFF FC World Cup 2022 open data (64 matches; labels from PFF events) &
+  16 matches: $-$0.002; 64 for the owner model: $-$0.009; \mf{} lower in every run \\
+XGBoost instead of HGB (optionally on GPU) & 0.674 vs 0.676; kept as option \\
+referee-whistle detector from broadcast audio & $\sim$60\,\% recall, no gain \\
+restart-pattern features from tracking & +0.001 (seed noise $\pm$0.008) \\
+IDSSE for the owner model only & +0.003 vs +0.008 for both \\
+smoothing probabilities before Viterbi; 48 penalty settings & all 0.670--0.675 \\
+ball detection in broadcast video & not synchronised; not feasible in time \\
+\bottomrule
+\end{tabularx}
+\caption{Ideas kept out of the final model. All remain in the code, switched off.}
+\label{tab:dropped}
+\end{table}
+
+Table~\ref{tab:dropped} lists what did not make it. PFF marks far more dead time (median 45\,\%) and
+broadcast tracking behaves differently, which outweighed the extra volume.
+
+\section{Limitations}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/recall.pdf}
+  \caption{Share of true possessions recovered (IoU $\geq0.5$, same team) by length, three held-out
+  Metrica games. Short possessions are the main \spf{} loss.}
+  \label{fig:recall}
+\end{figure}
+
+\begin{itemize}
+\item \textbf{Too few possessions.} On validation we predict fewer possessions than there are
+  (265 / 249 / 284 vs 379 / 357 / 404 per game). Long possessions are recovered almost always, short ones rarely
+  (Fig.~\ref{fig:recall}): most missed short ones are given to the other team by the frame model,
+  the rest are merged into a neighbour by the decoder.
+\item \textbf{Turnovers inside a ball gap} are inferred from team shape alone and often placed late.
+\item \textbf{Only 3 games share the target definition.} The degradation is matched to ATD
+  statistics, not learned; IDSSE draws the dead-ball and possession lines differently.
+\item \textbf{With more time:} more games labelled in Metrica's definition, a turnover-specific
+  detector for short possessions, and ball detection in the tactical video to shrink the gaps.
+\end{itemize}
+
+\section{Reproduction}
+
+Full instructions are in \texttt{possession/README.md} (Python 3.14.10, pinned requirements):
+
+{\footnotesize
+\begin{verbatim}
+pip install -r requirements-possession.txt
+# competition bundle -> data/ ; Metrica samples ->
+#   reference/sample-data (commit e706dd5);
+# IDSSE -> data/external/idsse (command in README)
+python -m possession.run --out Leicester_2016.csv
+python evaluation/validate_submission.py \
+       Leicester_2016.csv
+python -m possession.validate --idsse all --ens 5
+\end{verbatim}}
+
+All randomness is seeded (one stream per training game, fixed model seeds). Re-running gives a
+byte-identical file, md5 \texttt{0b3ed1253f1aeb5424e10b226b7c5e99}, checked by regenerating twice.
+
+\end{document}
