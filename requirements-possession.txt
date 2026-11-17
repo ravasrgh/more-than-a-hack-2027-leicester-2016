@@ -1,0 +1,6 @@
+# Pinned environment that produced the submission (python -m possession.run).
+# Tested with Python 3.14.10. Other versions of these libraries may change the file.
+numpy==2.5.4
+pandas==3.1.0
+scipy==1.18.1
+scikit-learn==1.9.1
