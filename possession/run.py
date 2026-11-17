@@ -15,7 +15,7 @@ from .data import load_bar_ath
 from .model import decode, fit, frame_table, predict
 from .tags import bar_ath_context, smart_tagging_context
 from .idsse import MATCHES as IDSSE_MATCHES
-from .validate import GAMES, ROOT, build_tables
+from .validate import ENS_SEED_STEP, GAMES, ROOT, build_tables
 
 LETTERS = np.array(["H", "A", "D", "X"])
 WHISTLES = False   # whistle detector kept (possession.audio) but off: no measurable gain, precision unverified
@@ -31,6 +31,8 @@ def main():
     ap.add_argument("--backend", choices=("hgb", "xgb"), default=None,
                     help="model library (default hgb); xgb with --device cuda trains on a GPU")
     ap.add_argument("--device", default=None)
+    ap.add_argument("--ens", type=int, default=1, help="average K models trained on differently "
+                    "degraded training copies")
     args = ap.parse_args()
     from . import model as model_mod
     if args.backend:
@@ -43,11 +45,15 @@ def main():
     if args.pff:
         from .pff import all_matches
         games = games + tuple("pff:" + x for x in all_matches()[:args.pff])
-    tables = build_tables(args.aug, whistles=WHISTLES, games=games)
-    models = fit([t for g in tables for t in tables[g]])
     m = load_bar_ath()
     Fh, Fa = frame_table(m, bar_ath_context() if WHISTLES else smart_tagging_context())
-    pD, pH = predict(models, Fh, Fa)
+    pD = pH = 0
+    for k in range(args.ens):   # member k: training copies degraded with seed 101 k (k = 0: as before)
+        tables = build_tables(args.aug, seed=ENS_SEED_STEP * k, whistles=WHISTLES, games=games)
+        models = fit([t for g in tables for t in tables[g]])
+        del tables
+        d, h = predict(models, Fh, Fa)
+        pD, pH = pD + d / args.ens, pH + h / args.ens
     np.savez(os.path.join(ROOT, "data", "cache", "bar_ath_probs.npz"), pD=pD, pH=pH)
     codes = decode(pD, pH, m.period, **PARAMS)
 

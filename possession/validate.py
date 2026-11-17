@@ -26,6 +26,7 @@ from .model import decode, fit, frame_table, predict  # noqa: E402
 
 GAMES = (1, 2, 3)
 PRE_STEP = 4      # external games are subsampled when their tables are built (memory); fit uses all kept frames
+ENS_SEED_STEP = 101   # seed of ensemble member k = seed + 101 k
 PFF_STEP = 8      # PFF: 64 games, keep every 8th frame
 PRE_STEP_ALL = False   # also subsample IDSSE (needed when PFF is added)
 
@@ -99,6 +100,10 @@ def main():
     ap.add_argument("--pff", type=int, default=0, help="add the first N PFF World Cup 2022 matches")
     ap.add_argument("--backend", choices=("hgb", "xgb"), default=None, help="model (default: env POSSESSION_BACKEND or hgb)")
     ap.add_argument("--device", default=None, help="xgb device: cpu or cuda")
+    ap.add_argument("--ens", type=int, default=1, help="ensemble: average K models, each trained on "
+                    "training copies degraded with a different seed")
+    ap.add_argument("--pff-owner", action="store_true", help="PFF trains the owner model only "
+                    "(its dead-ball definition differs most)")
     ap.add_argument("--pff-step", type=int, default=8)
     ap.add_argument("--pre-all", action="store_true", help="subsample IDSSE tables too (memory)")
     ap.add_argument("--save", help="write the held-out probabilities to this .npz (error analysis)")
@@ -125,20 +130,41 @@ def main():
     if args.pff:
         from .pff import all_matches
         extra = tuple(extra) + tuple("pff:" + x for x in all_matches()[:args.pff])
-    tables = build_tables(args.aug, seed=args.seed, tags=not args.no_tags, whistles=not args.no_whistles,
-                          games=GAMES + tuple(extra),
-                          owner_only=extra if args.idsse == "owner" else ())
-    probs = {}
-    for g in GAMES:                    # always tested on the Metrica samples (organisers' definition)
-        train = [t for h in tables if h != g for t in tables[h]]
-        models = fit(train)
-        Fh, Fa, labels, period = tables[g][0][:4]
-        probs[g] = predict(models, Fh, Fa) + (labels, period)
-        pD, pH = probs[g][:2]
-        alive = (labels < 2) & (period > 0)
-        acc_owner = np.mean((pH[alive] > 0.5) == (labels[alive] == 0))
-        acc_dead = np.mean((pD[period > 0] > 0.5) == (labels[period > 0] == 2))
-        print("game {}: frame owner acc {:.3f}  dead acc {:.3f}".format(g, acc_owner, acc_dead))
+    probs, test = {}, {}
+    for k in range(args.ens):
+        # ensemble member k: training copies degraded with another seed; the test copies of the
+        # held-out games are always those of the first member, so every k is scored on the same data
+        tables = build_tables(args.aug, seed=args.seed + ENS_SEED_STEP * k, tags=not args.no_tags,
+                              whistles=not args.no_whistles, games=GAMES + tuple(extra),
+                              owner_only=tuple(g for g in extra if
+                                          (args.idsse == "owner" and not g.startswith("pff:")) or
+                                          (args.pff_owner and g.startswith("pff:"))))
+        for g in GAMES:                    # always tested on the Metrica samples (organisers' definition)
+            if k == 0:
+                test[g] = tables[g][0][:4]
+            train = [t for h in tables if h != g for t in tables[h]]
+            models = fit(train)
+            Fh, Fa, labels, period = test[g]
+            pD, pH = predict(models, Fh, Fa)
+            if k == 0:
+                probs[g] = [pD, pH, labels, period]
+            else:   # running mean of the members' probabilities
+                probs[g][0] = (probs[g][0] * k + pD) / (k + 1)
+                probs[g][1] = (probs[g][1] * k + pH) / (k + 1)
+            pD, pH = probs[g][:2]
+            alive = (labels < 2) & (period > 0)
+            acc_owner = np.mean((pH[alive] > 0.5) == (labels[alive] == 0))
+            acc_dead = np.mean((pD[period > 0] > 0.5) == (labels[period > 0] == 2))
+            print("members {} game {}: frame owner acc {:.3f}  dead acc {:.3f}".format(
+                k + 1, g, acc_owner, acc_dead))
+        del tables
+        if args.ens > 1:
+            res = np.array([score(probs[g][2], decode(probs[g][0], probs[g][1], probs[g][3],
+                                                      switch=20, to_dead=16, from_dead=16))
+                            for g in GAMES])
+            print("ensemble of {}: spellF1 {:.4f}  macroF1 {:.4f}".format(
+                k + 1, res[:, 0].mean(), res[:, 1].mean()), flush=True)
+    probs = {g: tuple(v) for g, v in probs.items()}
 
     if args.save:
         np.savez(args.save, **{"{}_{}".format(k, g): v for g in GAMES
