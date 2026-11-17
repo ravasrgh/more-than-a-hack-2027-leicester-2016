@@ -31,8 +31,8 @@ def main():
     ap.add_argument("--backend", choices=("hgb", "xgb"), default=None,
                     help="model library (default hgb); xgb with --device cuda trains on a GPU")
     ap.add_argument("--device", default=None)
-    ap.add_argument("--ens", type=int, default=1, help="average K models trained on differently "
-                    "degraded training copies")
+    ap.add_argument("--ens", type=int, default=5, help="average K models trained on differently "
+                    "degraded training copies (LOGO: 5 members +0.005 spellF1 over 1)")
     args = ap.parse_args()
     from . import model as model_mod
     if args.backend:

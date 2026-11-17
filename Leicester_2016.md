@@ -17,11 +17,13 @@ other games (Metrica samples 1–3, IDSSE 7 Bundesliga matches) — clean tracki
 team-level features per frame (seen from each team) ──► HGB "dead" model  P(D | frame)
                                                       ──► HGB "owner" model P(team has ball | alive)
    ▼
+   ×5 models trained on differently degraded copies, probabilities averaged
+   ▼
 3-state Viterbi (H, A, D) with switch / to-dead / from-dead penalties  ──► frame,label
 ```
 
-Leave-one-game-out validation (§5) on the Metrica games: **spellF1 0.676, macroF1 0.930**
-(mean of 3 seeds).
+Leave-one-game-out validation (§5) on the Metrica games: **spellF1 0.682, macroF1 0.932**
+(mean of 3 seeds; 5-model ensemble).
 
 ## 2. Why this approach
 
@@ -111,13 +113,16 @@ end, never to select or tune.
 | + IDSSE, both models, mean of seeds 0/1/2 | 0.664 (0.671 / 0.654 / 0.667) | 0.926 |
 | same without IDSSE, seeds 0/1/2 | 0.654 (0.663 / 0.647 / 0.651) | 0.926 |
 | + ATD-matched ball smoothing, mean of seeds 0/1/2 | 0.660 (0.666 / 0.651 / 0.664) | 0.926 |
-| **+ ball-touch features (final)**, mean of seeds 0/1/2 | **0.676** (0.677 / 0.665 / 0.688) | 0.930 |
+| + ball-touch features, mean of seeds 0/1/2 | 0.676 (0.677 / 0.665 / 0.688) | 0.930 |
+| **+ ensemble of 5 (final)**, mean of seeds 0/1/2 | **0.682** (0.682 / 0.677 / 0.686) | 0.932 (higher on every seed) |
 
 Rows that change the degradation (mask, smoothing) also change the degraded test games, so they
 are not strictly comparable with the rows above them. The mask and the smoothing were chosen because
 they match the ATD statistics (§4), not because of their score. Rows that change only the training
 data or the features use the same test set and are directly comparable: IDSSE +0.010 and touch
-features +0.016, both positive on every seed.
+features +0.016, both positive on every seed. The ensemble (5 models, each trained on training
+copies degraded with another seed, probabilities averaged) adds +0.005 on average (+0.005 / +0.012 /
+−0.002); it is used because it reduces variance and raises macroF1 on every seed.
 
 Decoder penalties (switch 20, to-dead 16, from-dead 16 nats) are the centre of a flat optimum of a
 6 × 5 grid (all cells 0.649–0.656 without IDSSE; with IDSSE the chosen cell is 0.6710 vs best 0.6716), so they are not finely tuned.
@@ -126,11 +131,11 @@ Decoder penalties (switch 20, to-dead 16, from-dead 16 nats) are the centre of a
 
 | | final output | first version | expected from ATD mixture |
 |---|---|---|---|
-| dead share | 0.382 | 0.435 | ≈ 0.37 |
-| P(D \| ball missing) | 0.91 | 0.71 | ≈ 0.91 |
+| dead share | 0.377 | 0.435 | ≈ 0.37 |
+| P(D \| ball missing) | 0.90 | 0.71 | ≈ 0.91 |
 | P(D \| ball visible) | 0.02 | 0.24 | ≈ 0–0.03 |
 
-Final output: H 59,493 · A 38,674 · D 60,690 · X 40,462 frames; 288 possessions.
+Final output: H 59,906 · A 39,033 · D 59,918 · X 40,462 frames; 276 possessions.
 
 ## 6. Possession rules implemented
 
@@ -151,7 +156,7 @@ Final output: H 59,493 · A 38,674 · D 60,690 · X 40,462 frames; 288 possessio
 | restart-pattern features from tracking (ball still then struck, players gathering in the box, kick-off shape) | +0.001 LOGO (seed noise ≈ ±0.008) | kept in code, switched off (`features.RESTART`) |
 | ball mask independent of play state | clearly worse BAR–ATH consistency (P(D \| visible) 0.24) | replaced by the state mask |
 | IDSSE for the owner model only (its dead-ball definition differs) | +0.003 vs +0.008 for both models | IDSSE used for both |
-| PFF FC FIFA World Cup 2022 open data (64 matches, broadcast tracking + events; free download after registration, no written licence; labels derived from PFF's events like the Metrica ones, loader `possession/pff.py`) | 16 matches added: 0.672 vs 0.674 without (XGBoost, seeds 0/1/2: +0.004 / −0.006 / −0.004), macroF1 lower on every seed. Its definition marks more dead time (median 45 %) | kept in code (`--pff N`), off |
+| PFF FC FIFA World Cup 2022 open data (64 matches, broadcast tracking + events; free download after registration, no written licence; labels derived from PFF's events like the Metrica ones, loader `possession/pff.py`) | 16 matches added: 0.672 vs 0.674 without (XGBoost, seeds 0/1/2: +0.004 / −0.006 / −0.004). All 64 matches for the owner model only (HGB): 0.667 vs 0.676 (−0.001 / −0.006 / −0.022); all 64 for both models: 0.658 on seed 1 (−0.007). macroF1 lower on every run. Its definition marks more dead time (median 45 %) | kept in code (`--pff N`, `--pff-owner`), off |
 | XGBoost instead of scikit-learn HGB (optionally on GPU, `--backend xgb --device cuda`) | 0.674 vs 0.676 (seeds 0/1/2), less memory | kept as an option, HGB used (deterministic on CPU) |
 | tuning the decoder further: smoothing the frame probabilities before Viterbi, 48 penalty combinations | all 0.670–0.675 (seed noise) | not used |
 | broadcast video (ball detection to fill gaps) | not synchronised to tactical; not feasible in time | not used |
@@ -169,7 +174,7 @@ Final output: H 59,493 · A 38,674 · D 60,690 · X 40,462 frames; 288 possessio
 * **Only 3 games share the target definition.** The degradation is matched to ATD statistics, not
   learned. IDSSE uses a different line for dead ball and possession.
 * **What we would do with more time:** more labelled games in Metrica's definition, a
-  turnover-specific detector to recover short possessions, an ensemble over degradation seeds, and
+  turnover-specific detector to recover short possessions, and
   ball detection in the tactical video to shrink the gaps.
 
 ## 9. Reproduction
@@ -185,7 +190,8 @@ python evaluation/validate_submission.py Leicester_2016.csv
 ```
 
 All randomness is seeded: one random stream per training game, and fixed `random_state` for the
-models. Re-running gives a byte-identical file (checked by regenerating and comparing).
+models. Re-running gives a byte-identical file (checked by regenerating and comparing; md5
+`0b3ed1253f1aeb5424e10b226b7c5e99`). `run.py` uses the 5-model ensemble by default (`--ens 5`).
 Validation: `python -m possession.validate --idsse all [--seed k] [--grid]`.
 
 ## 10. Tools
