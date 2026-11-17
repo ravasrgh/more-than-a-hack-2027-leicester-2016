@@ -20,7 +20,7 @@ team-level features per frame (seen from each team) ──► HGB "dead" model  
 3-state Viterbi (H, A, D) with switch / to-dead / from-dead penalties  ──► frame,label
 ```
 
-Leave-one-game-out validation (§5) on the Metrica games: **spellF1 0.664, macroF1 0.926**
+Leave-one-game-out validation (§5) on the Metrica games: **spellF1 0.676, macroF1 0.930**
 (mean of 3 seeds).
 
 ## 2. Why this approach
@@ -38,6 +38,11 @@ Leave-one-game-out validation (§5) on the Metrica games: **spellF1 0.664, macro
 * **Features are team-level** (centroids, spreads, speeds, nearest-player distances,
   counts near the ball). They do not depend on player identity, so the ATD's 46 anonymous,
   fragmenting track slots are not a problem.
+* **Ball-touch features** catch short possessions that team shape reacts to too slowly.
+  A touch is a peak in the ball's velocity change (> 4 m/s over 0.24 s) with a player within
+  2.5 m. From each touch we derive the team of the previous / next touch (and the one before /
+  after), the time since / until them, touch balance and counts per team in ±1 s and ±3 s, and
+  which team is nearer the ball over ±0.25 s.
 
 ## 3. Training data
 
@@ -73,6 +78,7 @@ Clean training tracking is **degraded to match the ATD**. Every parameter was se
 | ball missing 41 % of frames, in long runs (median 10.7 s) | real ATD visible/missing run lengths are resampled |
 | the ball goes missing mainly when play is dead: player speed is 1.14 m/s while the ball is missing vs 2.09 m/s while visible. A two-component mixture gives P(missing \| dead) ≈ 0.95–1.0 and P(missing \| alive) ≈ 0.06 | state-dependent mask: dead spells are hidden with ±1 s jitter at their edges; alive play loses the ball at 6 % |
 | positions are smooth: median 2nd difference 0.011 m for the ball, 0.001 m for players | Gaussian noise smoothed over ~1 s (σ 0.5 m ball, 0.2 m players), not white jitter |
+| the ATD ball is low-pass filtered: 90th / 99th percentile of the ball's velocity change over ±1, ±3, ±6 frames is 1.5/2.9, 4.3/8.7, 8.3/16.5 m/s (clean training ball: 0.4/16.9, 7.4/24.9, 12.9/27.9) | training ball smoothed with a Gaussian of σ = 6 frames, which gives 1.6/3.0, 4.6/8.8, 8.5/15.8 |
 | track slots drop out | random 10 s dropout segments on 7 % of player-frames |
 
 The clean ball is first interpolated through its own gaps. In the corrected sample data the ball is
@@ -102,11 +108,16 @@ end, never to select or tune.
 | random ball mask (missingness independent of play state) | 0.579 | 0.893 |
 | state-dependent mask (final) | 0.650 | 0.924 |
 | + IDSSE, owner model only | 0.666 (seed 0) | – |
-| **+ IDSSE, both models (final)**, mean of seeds 0/1/2 | **0.664** (0.671 / 0.654 / 0.667) | 0.926 |
+| + IDSSE, both models, mean of seeds 0/1/2 | 0.664 (0.671 / 0.654 / 0.667) | 0.926 |
 | same without IDSSE, seeds 0/1/2 | 0.654 (0.663 / 0.647 / 0.651) | 0.926 |
+| + ATD-matched ball smoothing, mean of seeds 0/1/2 | 0.660 (0.666 / 0.651 / 0.664) | 0.926 |
+| **+ ball-touch features (final)**, mean of seeds 0/1/2 | **0.676** (0.677 / 0.665 / 0.688) | 0.930 |
 
-The first two rows use different degraded test sets, so they are not strictly comparable. The mask
-was chosen because it matches the ATD statistics (§4), not because of its score.
+Rows that change the degradation (mask, smoothing) also change the degraded test games, so they
+are not strictly comparable with the rows above them. The mask and the smoothing were chosen because
+they match the ATD statistics (§4), not because of their score. Rows that change only the training
+data or the features use the same test set and are directly comparable: IDSSE +0.010 and touch
+features +0.016, both positive on every seed.
 
 Decoder penalties (switch 20, to-dead 16, from-dead 16 nats) are the centre of a flat optimum of a
 6 × 5 grid (all cells 0.649–0.656 without IDSSE; with IDSSE the chosen cell is 0.6710 vs best 0.6716), so they are not finely tuned.
@@ -115,11 +126,11 @@ Decoder penalties (switch 20, to-dead 16, from-dead 16 nats) are the centre of a
 
 | | final output | first version | expected from ATD mixture |
 |---|---|---|---|
-| dead share | 0.375 | 0.435 | ≈ 0.37 |
-| P(D \| ball missing) | 0.90 | 0.71 | ≈ 0.91 |
-| P(D \| ball visible) | 0.01 | 0.24 | ≈ 0–0.03 |
+| dead share | 0.382 | 0.435 | ≈ 0.37 |
+| P(D \| ball missing) | 0.91 | 0.71 | ≈ 0.91 |
+| P(D \| ball visible) | 0.02 | 0.24 | ≈ 0–0.03 |
 
-Final output: H 59,559 · A 39,648 · D 59,650 · X 40,462 frames; 267 possessions, mean 14.9 s.
+Final output: H 59,493 · A 38,674 · D 60,690 · X 40,462 frames; 288 possessions.
 
 ## 6. Possession rules implemented
 
@@ -140,13 +151,19 @@ Final output: H 59,559 · A 39,648 · D 59,650 · X 40,462 frames; 267 possessio
 | restart-pattern features from tracking (ball still then struck, players gathering in the box, kick-off shape) | +0.001 LOGO (seed noise ≈ ±0.008) | kept in code, switched off (`features.RESTART`) |
 | ball mask independent of play state | clearly worse BAR–ATH consistency (P(D \| visible) 0.24) | replaced by the state mask |
 | IDSSE for the owner model only (its dead-ball definition differs) | +0.003 vs +0.008 for both models | IDSSE used for both |
+| PFF FC FIFA World Cup 2022 open data (64 matches, broadcast tracking + events; free download after registration, no written licence; labels derived from PFF's events like the Metrica ones, loader `possession/pff.py`) | 16 matches added: 0.672 vs 0.674 without (XGBoost, seeds 0/1/2: +0.004 / −0.006 / −0.004), macroF1 lower on every seed. Its definition marks more dead time (median 45 %) | kept in code (`--pff N`), off |
+| XGBoost instead of scikit-learn HGB (optionally on GPU, `--backend xgb --device cuda`) | 0.674 vs 0.676 (seeds 0/1/2), less memory | kept as an option, HGB used (deterministic on CPU) |
+| tuning the decoder further: smoothing the frame probabilities before Viterbi, 48 penalty combinations | all 0.670–0.675 (seed noise) | not used |
 | broadcast video (ball detection to fill gaps) | not synchronised to tactical; not feasible in time | not used |
 
 ## 8. Limitations
 
 * **Too few possessions.** On validation we predict ~270 possessions per game against ~380 true
-  ones. Short possessions (quick turnovers, second balls) are merged into their neighbours. This is
-  the main spellF1 loss.
+  ones. Half of the true possessions last under 5 s; only 13 % of those under 2 s are recovered
+  (IoU ≥ 0.5), against 90 % of those over 10 s. Most missed short ones are given to the other team
+  by the frame model, the rest are merged into a neighbour by the decoder. This is the main spellF1
+  loss. (Breakdown measured before the touch features; they raise spellF1 but the predicted
+  count stays ~270.)
 * **Inferring the owner while the ball is invisible** relies on team shape. Long build-ups behind
   a missing ball are fine, but a turnover inside a ball gap is often placed late.
 * **Only 3 games share the target definition.** The degradation is matched to ATD statistics, not

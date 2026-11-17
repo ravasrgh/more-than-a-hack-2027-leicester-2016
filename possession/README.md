@@ -35,7 +35,12 @@ Paths can be overridden with `METRICA_SAMPLE_DIR` and `IDSSE_DIR`. Intermediate 
 ```bash
 python -m possession.validate --idsse all           # leave-one-Metrica-game-out spellF1 / macroF1
 python -m possession.validate --idsse all --grid    # decoder penalty grid
+python -m possession.validate --idsse all --pff 16  # + PFF World Cup 2022 (tried, not used)
+python -m possession.validate --idsse all --backend xgb --device cuda   # XGBoost on a GPU (option)
 ```
+
+PFF data (optional, not used for the submission): free download after registration at PFF FC;
+put it anywhere under `data/external/` or set `PFF_DIR`.
 
 ## Modules
 
@@ -43,6 +48,7 @@ python -m possession.validate --idsse all --grid    # decoder penalty grid
 |---|---|
 | `data.py` | loaders: BAR-ATH ATD, Metrica samples (labels derived from events) |
 | `idsse.py` | IDSSE loader (labels from DFL BallStatus / BallPossession) |
+| `pff.py` | PFF World Cup 2022 loader (labels from PFF events; tried, off) |
 | `tags.py` | Smart-Tagging context (real for BAR-ATH, synthetic for training games) |
 | `features.py` | per-frame features + degradation of clean tracking to ATD-like quality |
 | `model.py` | gradient-boosting dead-ball and owner models, Viterbi decoder |
