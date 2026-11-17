@@ -25,6 +25,9 @@ from .features import degrade, run_lengths  # noqa: E402
 from .model import decode, fit, frame_table, predict  # noqa: E402
 
 GAMES = (1, 2, 3)
+PRE_STEP = 4      # external games are subsampled when their tables are built (memory); fit uses all kept frames
+PFF_STEP = 8      # PFF: 64 games, keep every 8th frame
+PRE_STEP_ALL = False   # also subsample IDSSE (needed when PFF is added)
 
 
 def atd_ball_runs():
@@ -35,6 +38,10 @@ def atd_ball_runs():
 
 def _game(g):
     """(Match, Metrica-style events) for a Metrica sample (int) or an IDSSE match id (str)."""
+    if isinstance(g, str) and g.startswith("pff:"):
+        from .pff import load_pff, restart_events
+        m = load_pff(g[4:])
+        return m, restart_events(m)
     if isinstance(g, str):
         from .idsse import load_idsse, restart_events
         m = load_idsse(g)
@@ -58,7 +65,13 @@ def build_tables(n_aug=2, seed=0, tags=True, whistles=True, games=GAMES, owner_o
             if ctx is not None and not whistles:
                 ctx = ctx[:2]
             Fh, Fa = frame_table(d, ctx)
-            out[g].append((Fh, Fa, m.labels, m.period, g not in owner_only))
+            k = PFF_STEP if isinstance(g, str) and g.startswith("pff:") else \
+                PRE_STEP if isinstance(g, str) and PRE_STEP_ALL else 1
+            if k > 1:   # large external sets: keep every k-th frame now, fit uses them all
+                out[g].append((Fh.iloc[::k].reset_index(drop=True), Fa.iloc[::k].reset_index(drop=True),
+                               m.labels[::k], m.period[::k], g not in owner_only, 1))
+            else:
+                out[g].append((Fh, Fa, m.labels, m.period, g not in owner_only))
     return out
 
 
@@ -81,17 +94,31 @@ def main():
     ap.add_argument("--no-whistles", action="store_true")
     ap.add_argument("--restart", action="store_true")
     ap.add_argument("--mask", choices=("state", "random"), default="state")
+    ap.add_argument("--touch", type=int, default=1, help="ball-touch features on/off")
+    ap.add_argument("--ball-smooth", type=float, default=6, help="Gaussian sigma (frames) for the training ball, 0 = off")
+    ap.add_argument("--pff", type=int, default=0, help="add the first N PFF World Cup 2022 matches")
+    ap.add_argument("--pff-step", type=int, default=8)
+    ap.add_argument("--pre-all", action="store_true", help="subsample IDSSE tables too (memory)")
+    ap.add_argument("--save", help="write the held-out probabilities to this .npz (error analysis)")
     ap.add_argument("--idsse", choices=("all", "owner"), help="add the 7 IDSSE matches to training "
                     "(all = both models, owner = possession model only)")
     args = ap.parse_args()
     from . import features
     features.RESTART = args.restart
     features.MASK = args.mask
+    features.TOUCH = bool(args.touch)
+    features.BALL_SMOOTH = args.ball_smooth
 
+    global PRE_STEP_ALL, PFF_STEP
+    PFF_STEP = args.pff_step
+    PRE_STEP_ALL = args.pre_all
     extra = ()
     if args.idsse:
         from .idsse import MATCHES
         extra = MATCHES
+    if args.pff:
+        from .pff import all_matches
+        extra = tuple(extra) + tuple("pff:" + x for x in all_matches()[:args.pff])
     tables = build_tables(args.aug, seed=args.seed, tags=not args.no_tags, whistles=not args.no_whistles,
                           games=GAMES + tuple(extra),
                           owner_only=extra if args.idsse == "owner" else ())
@@ -107,6 +134,9 @@ def main():
         acc_dead = np.mean((pD[period > 0] > 0.5) == (labels[period > 0] == 2))
         print("game {}: frame owner acc {:.3f}  dead acc {:.3f}".format(g, acc_owner, acc_dead))
 
+    if args.save:
+        np.savez(args.save, **{"{}_{}".format(k, g): v for g in GAMES
+                               for k, v in zip(("pD", "pH", "labels", "period"), probs[g])})
     grid = [dict(switch=s, to_dead=d, from_dead=d) for s, d in
             itertools.product((6, 9, 12, 16, 20, 30), (6, 9, 12, 16, 20))] if args.grid else \
         [dict(switch=20, to_dead=16, from_dead=16)]   # = run.PARAMS

@@ -44,20 +44,42 @@ def fit(tables, step=4, seed=SEED):
     """tables: list of (F_home, F_away, labels, period[, use_for_dead]).
     Returns (dead_model, owner_model). A table with use_for_dead=False trains the owner model
     only (a game whose dead-ball definition differs from the target one)."""
-    Xd, yd, Xo, yo = [], [], [], []
-    for tab in tables:
-        Fh, Fa, labels, period = tab[:4]
-        use_dead = tab[4] if len(tab) > 4 else True
-        sel = np.flatnonzero((period > 0) & (labels != X))[::step]
-        lab = labels[sel]
-        for F, T in ((Fh, 0), (Fa, 1)):
-            if use_dead:
-                Xd.append(F.iloc[sel]); yd.append(lab == D)
-            alive = lab != D
-            Xo.append(F.iloc[sel[alive]]); yo.append(lab[alive] == T)
     import pandas as pd
-    dead = _clf(seed).fit(pd.concat(Xd), np.concatenate(yd))
-    owner = _clf(seed).fit(pd.concat(Xo), np.concatenate(yo))
+    cols = tables[0][0].columns
+
+    def rows(which):
+        """(row selections, targets) per (table, view) for the dead or the owner model."""
+        out = []
+        for tab in tables:
+            Fh, Fa, labels, period = tab[:4]
+            use_dead = tab[4] if len(tab) > 4 else True
+            st = tab[5] if len(tab) > 5 else step
+            sel = np.flatnonzero((period > 0) & (labels != X))[::st]
+            lab = labels[sel]
+            for F, T in ((Fh, 0), (Fa, 1)):
+                if which == "dead":
+                    if use_dead:
+                        out.append((F, sel, lab == D))
+                else:
+                    alive = lab != D
+                    out.append((F, sel[alive], lab[alive] == T))
+        return out
+
+    def train(which):
+        # one float32 matrix filled in place (no pandas concat copies) -- memory
+        parts = rows(which)
+        Xm = np.empty((sum(len(s) for _, s, _ in parts), len(cols)), np.float32)
+        i = 0
+        for F, s, _ in parts:
+            Xm[i:i + len(s)] = F.to_numpy(np.float32)[s] if len(F) < 4 * len(s) else \
+                F.iloc[s].to_numpy(np.float32)
+            i += len(s)
+        y = np.concatenate([t for _, _, t in parts])
+        del parts
+        return _clf(seed).fit(pd.DataFrame(Xm, columns=cols, copy=False), y)
+
+    dead = train("dead")
+    owner = train("owner")
     return dead, owner
 
 

@@ -173,10 +173,75 @@ def team_features(m, T):
     for name in ("spd_all", "slow_all", "cx_gap", "vx_gap", "sx_T", "sx_O"):
         f[name + "_c10"] = _roll(np.asarray(f[name], np.float64), 250, 250)
 
+    if TOUCH:
+        f.update(_touch_features(m, T, dist, mt, mo, bvis))
+
     if RESTART:
         f.update(_restart_features(m, f, xo, yc, spd, dist, mt, mo, bvis, bxo, byc, bspd))
 
     return pd.DataFrame({k: np.asarray(v, np.float32) for k, v in f.items()})
+
+
+TOUCH = True       # ball-touch features (who last / next played the ball)
+TOUCH_DV = 4.0     # m/s change of ball velocity over 0.24 s that counts as a touch
+TOUCH_R = 2.5      # m: nearest player must be this close to own the touch
+
+
+def touches(m, dist, mt, mo):
+    """(frames, team 0/1) of detected ball touches:
+    local maxima of the ball's velocity change with a player close enough to have caused it."""
+    k = 3
+    vx = (_shift(m.bx, 1) - _shift(m.bx, -1)) * (FPS / 2)
+    vy = (_shift(m.by, 1) - _shift(m.by, -1)) * (FPS / 2)
+    dv = np.hypot(_shift(vx, k) - _shift(vx, -k), _shift(vy, k) - _shift(vy, -k))
+    dvf = np.where(np.isfinite(dv), dv, 0)
+    w = 2 * k + 1
+    peak = (dvf >= TOUCH_DV) & (dvf == pd.Series(dvf).rolling(w, center=True, min_periods=1).max().to_numpy())
+    d0 = np.nanmin(np.where(m.team[None, :] == 0, dist, np.inf), 1)
+    d1 = np.nanmin(np.where(m.team[None, :] == 1, dist, np.inf), 1)
+    near = np.minimum(d0, d1) < TOUCH_R
+    fr = np.flatnonzero(peak & near & (m.period > 0))
+    return fr, (d1[fr] < d0[fr]).astype(np.int8)
+
+
+def _touch_features(m, T, dist, mt, mo, bvis):
+    fr, tm = touches(m, dist, mt, mo)
+    f = {}
+    n = m.n
+    idx = np.arange(n)
+    rel = np.where(tm == T, 1.0, -1.0)
+    if len(fr):
+        nxt = np.searchsorted(fr, idx, side="right")       # first touch > t
+        prv = nxt - 1
+        hp, hn = prv >= 0, nxt < len(fr)
+        pi, ni = np.maximum(prv, 0), np.minimum(nxt, len(fr) - 1)
+        f["tch_prev"] = np.where(hp, rel[pi], np.nan)
+        f["tch_since"] = np.where(hp, np.minimum(idx - fr[pi], 750), np.nan)
+        f["tch_next"] = np.where(hn, rel[ni], np.nan)
+        f["tch_until"] = np.where(hn, np.minimum(fr[ni] - idx, 750), np.nan)
+        p2 = np.maximum(prv - 1, 0)
+        f["tch_prev2"] = np.where(prv >= 1, rel[p2], np.nan)
+        n2 = np.minimum(nxt + 1, len(fr) - 1)
+        f["tch_next2"] = np.where(nxt + 1 < len(fr), rel[n2], np.nan)
+    else:
+        for k in ("tch_prev", "tch_since", "tch_next", "tch_until", "tch_prev2", "tch_next2"):
+            f[k] = np.full(n, np.nan)
+    ev = np.zeros(n); ev[fr] = rel
+    cnt = np.zeros(n); cnt[fr] = 1
+    for name, (b, a) in (("1", (25, 25)), ("p1", (25, 0)), ("n1", (0, 25)), ("3", (75, 75))):
+        s_ev = pd.Series(ev).rolling(a + b + 1, min_periods=1).sum().to_numpy()
+        s_ct = pd.Series(cnt).rolling(a + b + 1, min_periods=1).sum().to_numpy()
+        s_ev, s_ct = _shift(s_ev, a), _shift(s_ct, a)
+        f["tch_bal" + name] = s_ev
+        f["tch_cnt" + name] = s_ct
+    # short-window control: share of visible frames where T is nearer to the ball
+    dT = np.nanmin(np.where(mt, dist, np.inf), 1)
+    dO = np.nanmin(np.where(mo, dist, np.inf), 1)
+    nearer = np.where(bvis & np.isfinite(dT) & np.isfinite(dO), (dT < dO).astype(np.float64), np.nan)
+    f["nearer_s"] = _roll(nearer, 6, 6)
+    f["nearer_p"] = _roll(nearer, 12, 0)
+    f["nearer_n"] = _roll(nearer, 0, 12)
+    return f
 
 
 RESTART = False    # restart-pattern features: kept, off -- LOGO +0.001 (noise level); --restart turns on
@@ -267,6 +332,8 @@ def _smooth_noise(rng, sigma, shape):
 # 2.09 m/s alive. Solving the mixture gives P(missing | dead) ~ 0.95-1.0 and
 # P(missing | alive) ~ 0.06 (dead share ~ 0.37). Edge jitter keeps a missing ball strong
 # evidence of a stoppage, not proof.
+BALL_SMOOTH = 6    # frames (Gaussian sigma): the ATD ball is low-pass filtered -- with 6 the
+                   # ball's velocity-change quantiles over 1/3/6 frames match the ATD's (no labels)
 MASK = "state"
 P_MISS_DEAD = 1.0  # edge jitter brings the effective rate to ~0.85-0.9
 P_MISS_ALIVE = 0.06
@@ -319,6 +386,10 @@ def degrade(m, vis_runs, miss_runs, rng, ball_sigma=0.5, player_sigma=0.2, playe
         sel = np.flatnonzero(m.period == p)
         bx[sel] = pd.Series(bx[sel]).interpolate(limit_direction="both").to_numpy()
         by[sel] = pd.Series(by[sel]).interpolate(limit_direction="both").to_numpy()
+        if BALL_SMOOTH:
+            from scipy.ndimage import gaussian_filter1d
+            bx[sel] = gaussian_filter1d(bx[sel], BALL_SMOOTH)
+            by[sel] = gaussian_filter1d(by[sel], BALL_SMOOTH)
 
     if MASK == "state" and m.labels is not None:
         mask = _state_mask(m.labels, vis_runs, miss_runs, rng)

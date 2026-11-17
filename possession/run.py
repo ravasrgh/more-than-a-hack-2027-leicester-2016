@@ -26,10 +26,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(ROOT, "evaluation", "results", "tracking_hmm.csv"))
     ap.add_argument("--aug", type=int, default=2)
+    ap.add_argument("--pff", type=int, default=0, help="also train on the first N PFF World Cup 2022 "
+                    "matches (needs ~16+ GB RAM; see possession/README.md)")
     args = ap.parse_args()
 
     # Metrica samples + IDSSE Bundesliga matches (other games); LOGO: +0.010 spellF1 over 3 seeds
-    tables = build_tables(args.aug, whistles=WHISTLES, games=GAMES + IDSSE_MATCHES)
+    games = GAMES + IDSSE_MATCHES
+    if args.pff:
+        from .pff import all_matches
+        games = games + tuple("pff:" + x for x in all_matches()[:args.pff])
+    tables = build_tables(args.aug, whistles=WHISTLES, games=games)
     models = fit([t for g in tables for t in tables[g]])
     m = load_bar_ath()
     Fh, Fa = frame_table(m, bar_ath_context() if WHISTLES else smart_tagging_context())
