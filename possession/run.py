@@ -28,7 +28,15 @@ def main():
     ap.add_argument("--aug", type=int, default=2)
     ap.add_argument("--pff", type=int, default=0, help="also train on the first N PFF World Cup 2022 "
                     "matches (needs ~16+ GB RAM; see possession/README.md)")
+    ap.add_argument("--backend", choices=("hgb", "xgb"), default=None,
+                    help="model library (default hgb); xgb with --device cuda trains on a GPU")
+    ap.add_argument("--device", default=None)
     args = ap.parse_args()
+    from . import model as model_mod
+    if args.backend:
+        model_mod.BACKEND = args.backend
+    if args.device:
+        model_mod.DEVICE = args.device
 
     # Metrica samples + IDSSE Bundesliga matches (other games); LOGO: +0.010 spellF1 over 3 seeds
     games = GAMES + IDSSE_MATCHES

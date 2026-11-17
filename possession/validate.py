@@ -68,8 +68,8 @@ def build_tables(n_aug=2, seed=0, tags=True, whistles=True, games=GAMES, owner_o
             k = PFF_STEP if isinstance(g, str) and g.startswith("pff:") else \
                 PRE_STEP if isinstance(g, str) and PRE_STEP_ALL else 1
             if k > 1:   # large external sets: keep every k-th frame now, fit uses them all
-                out[g].append((Fh.iloc[::k].reset_index(drop=True), Fa.iloc[::k].reset_index(drop=True),
-                               m.labels[::k], m.period[::k], g not in owner_only, 1))
+                out[g].append((Fh.iloc[::k].reset_index(drop=True).copy(), Fa.iloc[::k].reset_index(drop=True).copy(),
+                               m.labels[::k].copy(), m.period[::k].copy(), g not in owner_only, 1))
             else:
                 out[g].append((Fh, Fa, m.labels, m.period, g not in owner_only))
     return out
@@ -97,13 +97,19 @@ def main():
     ap.add_argument("--touch", type=int, default=1, help="ball-touch features on/off")
     ap.add_argument("--ball-smooth", type=float, default=6, help="Gaussian sigma (frames) for the training ball, 0 = off")
     ap.add_argument("--pff", type=int, default=0, help="add the first N PFF World Cup 2022 matches")
+    ap.add_argument("--backend", choices=("hgb", "xgb"), default=None, help="model (default: env POSSESSION_BACKEND or hgb)")
+    ap.add_argument("--device", default=None, help="xgb device: cpu or cuda")
     ap.add_argument("--pff-step", type=int, default=8)
     ap.add_argument("--pre-all", action="store_true", help="subsample IDSSE tables too (memory)")
     ap.add_argument("--save", help="write the held-out probabilities to this .npz (error analysis)")
     ap.add_argument("--idsse", choices=("all", "owner"), help="add the 7 IDSSE matches to training "
                     "(all = both models, owner = possession model only)")
     args = ap.parse_args()
-    from . import features
+    from . import features, model as model_mod
+    if args.backend:
+        model_mod.BACKEND = args.backend
+    if args.device:
+        model_mod.DEVICE = args.device
     features.RESTART = args.restart
     features.MASK = args.mask
     features.TOUCH = bool(args.touch)

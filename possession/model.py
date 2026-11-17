@@ -34,6 +34,35 @@ def frame_table(m, context=None):
     return tuple(out)
 
 
+import os
+
+# "hgb" (scikit-learn, CPU, default) or "xgb" (XGBoost; POSSESSION_DEVICE=cuda trains on the GPU)
+BACKEND = os.environ.get("POSSESSION_BACKEND", "hgb")
+DEVICE = os.environ.get("POSSESSION_DEVICE", "cpu")
+
+
+class _XGB:
+    """XGBoost booster with the predict_proba interface the rest of the code uses."""
+
+    def __init__(self, seed):
+        self.seed = seed
+
+    def fit(self, Xm, y):
+        import xgboost as xgb
+        d = xgb.QuantileDMatrix(Xm, label=y.astype(np.float32), missing=np.nan, max_bin=256)
+        params = dict(objective="binary:logistic", eta=0.05, tree_method="hist",
+                      grow_policy="lossguide", max_leaves=31, max_depth=0, min_child_weight=50,
+                      reg_lambda=1.0, seed=self.seed, device=DEVICE)
+        self.booster = xgb.train(params, d, num_boost_round=300)
+        return self
+
+    def predict_proba(self, F):
+        X = F.to_numpy(np.float32) if hasattr(F, "to_numpy") else F
+        p = self.booster.inplace_predict(X, missing=np.nan)
+        p = p.get() if hasattr(p, "get") else np.asarray(p)
+        return np.stack([1 - p, p], 1)
+
+
 def _clf(seed):
     return HistGradientBoostingClassifier(
         max_iter=300, learning_rate=0.05, max_leaf_nodes=31, min_samples_leaf=200,
@@ -76,6 +105,8 @@ def fit(tables, step=4, seed=SEED):
             i += len(s)
         y = np.concatenate([t for _, _, t in parts])
         del parts
+        if BACKEND == "xgb":
+            return _XGB(seed).fit(Xm, y)
         return _clf(seed).fit(pd.DataFrame(Xm, columns=cols, copy=False), y)
 
     dead = train("dead")
